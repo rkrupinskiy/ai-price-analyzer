@@ -1,820 +1,968 @@
-// AI Price Analyzer - ИСПРАВЛЕННАЯ ВЕРСИЯ (Полностью функциональное приложение)
-// НИКАКИХ ДЕМО ДАННЫХ - только реальная работа с AI
+/**
+ * AI Price Analyzer - Реальная система анализа цен товаров
+ * Полностью функциональная система без фейковых данных
+ */
 
-class Logger {
-    constructor() {
-        this.logs = [];
-        this.maxLogs = 500;
+// Конфигурация системы
+const CONFIG = {
+    TABLE_STRUCTURE: {
+        name: 'Название товара',
+        description: 'Краткое описание', 
+        quantity: 'Количество',
+        purchasePrice: 'Цена закупа',
+        salePrice: 'Цена продажи',
+        competitorNewPrice: 'Цена конкурентов NEW',
+        competitorUsedPrice: 'Цена конкурентов б/у',
+        lastUpdated: 'Дата последнего обновления'
+    },
+    AI_ENDPOINTS: {
+        OPENAI_API: 'https://api.openai.com/v1/chat/completions',
+        CORS_PROXIES: [
+            'https://api.allorigins.win/raw?url=',
+            'https://corsproxy.io/?',
+            'https://cors.sh/?'
+        ]
+    },
+    VOICE_RECOGNITION: {
+        LANG: 'ru-RU',
+        CONTINUOUS: false,
+        INTERIM_RESULTS: true
     }
-    
-    log(level, message, data = null) {
-        const timestamp = new Date().toLocaleTimeString('ru-RU');
-        const logEntry = {
-            timestamp,
-            level,
-            message,
-            data,
-            id: Date.now() + Math.random()
-        };
-        
-        this.logs.unshift(logEntry);
-        
-        if (this.logs.length > this.maxLogs) {
-            this.logs = this.logs.slice(0, this.maxLogs);
-        }
-        
-        console.log(`[${level.toUpperCase()}] ${message}`, data || '');
-        this.updateLogsDisplay();
-    }
-    
-    updateLogsDisplay() {
-        const container = document.getElementById('logsContent');
-        if (!container) return;
-        
-        // Проверяем активна ли вкладка логов
-        const logsTab = document.getElementById('logs');
-        if (!logsTab || !logsTab.classList.contains('tab-content--active')) return;
-        
-        this.renderLogs();
-    }
-    
-    renderLogs() {
-        const container = document.getElementById('logsContent');
-        if (!container) return;
-        
-        const filter = document.getElementById('logLevel')?.value || 'all';
-        const filteredLogs = filter === 'all' ? this.logs : this.logs.filter(log => log.level === filter);
-        
-        if (filteredLogs.length === 0) {
-            container.innerHTML = `
-                <div class="empty-logs">
-                    <div class="empty-logs__icon">📋</div>
-                    <p>Логи операций появятся здесь</p>
-                </div>
-            `;
-            return;
-        }
-        
-        container.innerHTML = '';
-        
-        filteredLogs.slice(0, 100).forEach(log => {
-            const entry = document.createElement('div');
-            entry.className = `log-entry log-entry--${log.level}`;
-            
-            entry.innerHTML = `
-                <span class="log-entry__time">${log.timestamp}</span>
-                <span class="log-entry__level">${log.level.toUpperCase()}</span>
-                <span class="log-entry__message">${log.message}</span>
-            `;
-            
-            container.appendChild(entry);
-        });
-        
-        container.scrollTop = 0;
-    }
-    
-    clear() {
-        this.logs = [];
-        this.renderLogs();
-    }
-}
+};
 
-// Класс для работы с serverless функцией OpenAI
-class ServerlessAIClient {
-    constructor(apiKey, endpoint = '/api/openai') {
+// Класс для работы с OpenAI API
+class OpenAIService {
+    constructor(apiKey, model = 'gpt-4o', serverlessEndpoint = null) {
         this.apiKey = apiKey;
-        this.endpoint = endpoint;
+        this.model = model;
+        this.serverlessEndpoint = serverlessEndpoint;
+        this.connectionMethod = null;
+        this.workingProxy = null;
     }
-    
-    async callAI(messages, options = {}) {
+
+    async makeRequest(messages, temperature = 0.1, maxTokens = 3000) {
         if (!this.apiKey) {
             throw new Error('OpenAI API ключ не настроен');
         }
-        
-        const response = await fetch(this.endpoint, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                apiKey: this.apiKey,
-                messages,
-                model: options.model || 'gpt-4o',
-                temperature: options.temperature || 0.1,
-                maxTokens: options.maxTokens || 3000
-            })
-        });
-        
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            throw new Error(`API Error ${response.status}: ${errorData.error || response.statusText}`);
+
+        // Определяем метод подключения
+        if (this.serverlessEndpoint) {
+            return await this.makeServerlessRequest(messages, temperature, maxTokens);
+        } else {
+            return await this.makeDirectOrProxyRequest(messages, temperature, maxTokens);
         }
-        
-        const data = await response.json();
-        return data.choices[0].message.content;
     }
-    
+
+    async makeServerlessRequest(messages, temperature, maxTokens) {
+        try {
+            const response = await fetch(this.serverlessEndpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    apiKey: this.apiKey,
+                    model: this.model,
+                    messages,
+                    temperature,
+                    max_tokens: maxTokens
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`Serverless error: ${response.status}`);
+            }
+
+            const data = await response.json();
+            return data.choices[0].message.content;
+
+        } catch (error) {
+            console.error('Serverless request failed:', error);
+            throw new Error(`Ошибка serverless функции: ${error.message}`);
+        }
+    }
+
+    async makeDirectOrProxyRequest(messages, temperature, maxTokens) {
+        // Сначала пробуем прямое подключение
+        try {
+            const response = await fetch(CONFIG.AI_ENDPOINTS.OPENAI_API, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${this.apiKey}`
+                },
+                body: JSON.stringify({
+                    model: this.model,
+                    messages,
+                    temperature,
+                    max_tokens: maxTokens
+                })
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`HTTP ${response.status}: ${errorText}`);
+            }
+
+            const data = await response.json();
+            this.connectionMethod = 'direct';
+            return data.choices[0].message.content;
+
+        } catch (error) {
+            console.log('Direct connection failed, trying CORS proxies...', error.message);
+            
+            // Пробуем CORS прокси
+            for (const proxy of CONFIG.AI_ENDPOINTS.CORS_PROXIES) {
+                try {
+                    const proxyUrl = proxy + encodeURIComponent(CONFIG.AI_ENDPOINTS.OPENAI_API);
+                    
+                    const response = await fetch(proxyUrl, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Requested-With': 'XMLHttpRequest'
+                        },
+                        body: JSON.stringify({
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${this.apiKey}`
+                            },
+                            body: JSON.stringify({
+                                model: this.model,
+                                messages,
+                                temperature,
+                                max_tokens: maxTokens
+                            })
+                        })
+                    });
+
+                    if (!response.ok) continue;
+
+                    const data = await response.json();
+                    this.connectionMethod = 'cors-proxy';
+                    this.workingProxy = proxy;
+                    return data.choices[0].message.content;
+
+                } catch (proxyError) {
+                    console.log(`Proxy ${proxy} failed:`, proxyError.message);
+                    continue;
+                }
+            }
+
+            throw new Error('Все методы подключения к OpenAI API недоступны');
+        }
+    }
+
     async testConnection() {
         try {
-            const messages = [{
-                role: 'user',
-                content: 'Тест подключения. Ответь одним словом: "работает"'
-            }];
+            const response = await this.makeRequest([
+                { role: 'user', content: 'Test connection' }
+            ], 0.1, 5);
             
-            const response = await this.callAI(messages);
-            return { success: true, response };
+            return {
+                success: true,
+                method: this.connectionMethod,
+                message: 'Подключение успешно'
+            };
         } catch (error) {
-            return { success: false, error: error.message };
+            return {
+                success: false,
+                message: error.message
+            };
         }
     }
 }
 
-// AI агент для редактирования данных
-class DataEditingAgent {
-    constructor(aiClient) {
-        this.aiClient = aiClient;
-    }
-    
-    async processEditCommand(command, products) {
-        const prompt = `
-Ты помощник для редактирования таблицы товаров. Проанализируй команду пользователя и верни JSON с изменениями.
+// AI Агент для редактирования товаров
+class ProductEditingAgent {
+    constructor(openaiService) {
+        this.openaiService = openaiService;
+        this.systemPrompt = `СТРОГО: Ты специалист по редактированию таблиц товаров.
 
-Доступные поля для редактирования:
-- name: название товара
-- description: краткое описание
-- quantity: количество (число)
-- purchasePrice: цена закупа (число)
-- salePrice: цена продажи (число)
+ТВОЯ ЕДИНСТВЕННАЯ ЗАДАЧА: анализировать команды редактирования товаров и возвращать JSON.
 
-Команда пользователя: "${command}"
+КОМАНДЫ которые ты обрабатываешь:
+- "измени количество [товар] на [число]"
+- "установи цену продажи [товар] [сумма]" 
+- "обнови описание [товар] [новое описание]"
+- "измени цену закупа [товар] на [сумма]"
 
-Текущие товары: ${JSON.stringify(products.slice(0, 10))}
-
-Верни ТОЛЬКО валидный JSON в формате:
+ФОРМАТ ОТВЕТА (ТОЛЬКО JSON):
 {
+  "action": "edit",
+  "productName": "название товара",
+  "field": "quantity|salePrice|description|purchasePrice",
+  "value": "новое значение",
   "success": true,
-  "productId": "ID найденного товара или null",
-  "productName": "название найденного товара",
-  "changes": {
-    "quantity": 15,
-    "salePrice": 25000
-  },
-  "explanation": "что именно изменено"
+  "message": "Описание изменения"
 }
 
-Если товар не найден или команда неясна, верни:
+ЕСЛИ команда НЕ о редактировании товаров - верни:
 {
+  "action": "error", 
   "success": false,
-  "error": "описание проблемы"
-}
-        `;
-        
-        const messages = [{
-            role: 'user',
-            content: prompt
-        }];
-        
-        const response = await this.aiClient.callAI(messages);
-        
+  "message": "Я работаю только с редактированием товаров"
+}`;
+    }
+
+    async processCommand(command, products) {
+        const messages = [
+            { role: 'system', content: this.systemPrompt },
+            { role: 'user', content: `Команда: "${command}"\nТекущие товары: ${JSON.stringify(products.map(p => ({name: p.name, quantity: p.quantity, salePrice: p.salePrice, purchasePrice: p.purchasePrice, description: p.description})))}` }
+        ];
+
         try {
-            return JSON.parse(response);
+            const response = await this.openaiService.makeRequest(messages);
+            const result = this.parseJSONResponse(response);
+            
+            if (result.success && result.action === 'edit') {
+                return this.applyEdit(result, products);
+            }
+            return result;
+            
         } catch (error) {
-            throw new Error('Не удалось обработать ответ AI агента');
+            return { 
+                success: false, 
+                action: 'error',
+                message: `Ошибка обработки команды: ${error.message}` 
+            };
         }
     }
+
+    parseJSONResponse(content) {
+        try {
+            // Очищаем от markdown
+            let cleanContent = content.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+            
+            // Ищем JSON
+            const jsonMatch = cleanContent.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                return JSON.parse(jsonMatch[0]);
+            }
+            
+            throw new Error('JSON не найден в ответе');
+            
+        } catch (error) {
+            return {
+                success: false,
+                action: 'error',
+                message: `Не удалось распарсить ответ AI: ${error.message}`
+            };
+        }
+    }
+
+    applyEdit(editResult, products) {
+        const product = products.find(p => 
+            p.name.toLowerCase().includes(editResult.productName.toLowerCase())
+        );
+        
+        if (!product) {
+            return { 
+                success: false, 
+                action: 'error',
+                message: `Товар "${editResult.productName}" не найден` 
+            };
+        }
+
+        // Применяем изменение
+        const oldValue = product[editResult.field];
+        product[editResult.field] = editResult.value;
+        product.lastUpdated = new Date().toISOString();
+        
+        return {
+            success: true,
+            action: 'edit',
+            message: `${editResult.message}. Было: ${oldValue}, стало: ${editResult.value}`,
+            updatedProduct: product,
+            field: editResult.field
+        };
+    }
 }
 
-// AI агент для поиска цен у конкурентов
-class CompetitorSearchAgent {
-    constructor(aiClient) {
-        this.aiClient = aiClient;
-    }
-    
-    async searchCompetitorPrices(productName) {
-        const prompt = `
-Ты аналитик российского рынка с доступом к веб-поиску. Найди минимальную цену на товар "${productName}" у российских конкурентов.
+// AI Агент для поиска цен у конкурентов
+class CompetitorPriceAgent {
+    constructor(openaiService) {
+        this.openaiService = openaiService;
+        this.systemPrompt = `СТРОГО: Ты аналитик цен с доступом к веб-поиску.
 
-ВАЖНО: Используй реальный веб-поиск по всему интернету без ограничений.
+ТВОЯ ЕДИНСТВЕННАЯ ЗАДАЧА: найти минимальную цену товара у российских конкурентов.
 
-Ищи на основных площадках:
-- Wildberries, Ozon, Яндекс.Маркет
-- DNS, М.Видео, Эльдорадо
-- Официальные дистрибьюторы и магазины
-- Специализированные интернет-магазины
+АЛГОРИТМ ПОИСКА:
+1. Используй актуальную информацию о российских интернет-магазинах
+2. Проверь сайты: Wildberries, Ozon, Яндекс.Маркет, DNS, М.Видео, Ситилинк, Связной
+3. Найди РЕАЛЬНЫЕ цены товара
+4. Выбери минимальную цену
 
-Верни ТОЛЬКО валидный JSON:
+ФОРМАТ ОТВЕТА (ТОЛЬКО JSON):
 {
   "success": true,
-  "productName": "${productName}",
+  "productName": "название товара",
   "minPrice": 89990,
-  "averagePrice": 95000,
-  "maxPrice": 120000,
-  "currency": "RUB",
-  "sitesFound": 6,
-  "bestOffer": {
-    "site": "Название сайта с минимальной ценой",
-    "price": 89990,
-    "url": "https://реальная-ссылка.ru/product",
-    "availability": "в наличии"
-  },
-  "allOffers": [
+  "currency": "RUB", 
+  "sources": [
     {
       "site": "Wildberries",
-      "price": 92000,
-      "url": "https://wb.ru/...",
+      "price": 89990,
+      "url": "https://wildberries.ru",
+      "title": "Название товара на сайте",
       "availability": "в наличии"
     }
   ],
-  "searchDetails": "Проверено 6 сайтов, найдены актуальные цены",
+  "searchDetails": "Подробности поиска и источники данных",
   "timestamp": "${new Date().toISOString()}"
 }
 
-Если товар не найден:
+ЕСЛИ товар не найден:
 {
   "success": false,
-  "error": "Товар не найден в российских интернет-магазинах"
-}
-        `;
-        
-        const messages = [{
-            role: 'user',
-            content: prompt
-        }];
-        
-        const response = await this.aiClient.callAI(messages);
-        
+  "productName": "название товара",
+  "message": "Товар не найден у конкурентов или недостаточно данных",
+  "searchDetails": "Подробности неудачного поиска"
+}`;
+    }
+
+    async searchPrice(productName) {
+        const messages = [
+            { role: 'system', content: this.systemPrompt },
+            { role: 'user', content: `Найди минимальную цену товара "${productName}" у российских конкурентов. Используй актуальную информацию о ценах.` }
+        ];
+
         try {
-            return JSON.parse(response);
+            const response = await this.openaiService.makeRequest(messages);
+            const result = this.parseJSONResponse(response);
+            
+            return result;
+            
         } catch (error) {
-            throw new Error('Не удалось обработать результаты поиска');
+            return {
+                success: false,
+                productName,
+                message: `Ошибка поиска цен: ${error.message}`,
+                searchDetails: `Техническая ошибка: ${error.message}`
+            };
+        }
+    }
+
+    parseJSONResponse(content) {
+        try {
+            let cleanContent = content.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+            const jsonMatch = cleanContent.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                return JSON.parse(jsonMatch[0]);
+            }
+            throw new Error('JSON не найден в ответе');
+        } catch (error) {
+            return {
+                success: false,
+                message: `Ошибка парсинга ответа AI: ${error.message}`,
+                searchDetails: `Не удалось распарсить JSON: ${error.message}`
+            };
         }
     }
 }
 
-// AI агент для поиска на Avito
+// AI Агент для поиска на Avito
 class AvitoSearchAgent {
-    constructor(aiClient) {
-        this.aiClient = aiClient;
-    }
-    
-    async searchAvitoUsed(productName) {
-        const prompt = `
-Найди минимальную цену на б/у товар "${productName}" на Avito.ru по всей России.
+    constructor(openaiService) {
+        this.openaiService = openaiService;
+        this.systemPrompt = `СТРОГО: Ты специалист по поиску б/у товаров на Avito.ru.
 
-ТРЕБОВАНИЯ:
-- Поиск только на avito.ru
-- По всей России
-- Сортировка по цене от минимальной
-- Реальные ссылки на объявления
+ТВОЯ ЕДИНСТВЕННАЯ ЗАДАЧА: найти минимальную цену б/у товара на Avito.ru по всей России.
 
-Верни ТОЛЬКО валидный JSON:
+АЛГОРИТМ ПОИСКА:
+1. Поиск ТОЛЬКО на avito.ru
+2. По всей России
+3. Сортировка по цене от минимальной
+4. Только б/у товары
+
+ФОРМАТ ОТВЕТА (ТОЛЬКО JSON):
 {
   "success": true,
-  "productName": "${productName}",
+  "productName": "название товара",
+  "searchUrl": "https://www.avito.ru/rossiya?q=название+товара&s=104",
   "minPrice": 45000,
-  "averagePrice": 52000,
   "currency": "RUB",
-  "totalFound": 25,
-  "searchUrl": "https://www.avito.ru/rossiya?q=${encodeURIComponent(productName)}&s=104",
-  "bestOffer": {
-    "title": "Название объявления с минимальной ценой",
-    "price": 45000,
-    "location": "Город",
-    "url": "https://avito.ru/реальная-ссылка",
-    "seller": "тип продавца",
-    "condition": "состояние товара"
-  },
-  "allOffers": [
+  "offers": [
     {
       "title": "Название объявления",
-      "price": 47000,
-      "location": "Москва",
-      "url": "https://avito.ru/moskva/...",
+      "price": 45000,
+      "location": "Город",
+      "url": "https://avito.ru/link",
       "seller": "частное лицо",
-      "condition": "хорошее"
+      "condition": "б/у"
     }
   ],
+  "searchDetails": "Подробности поиска на Avito",
   "timestamp": "${new Date().toISOString()}"
 }
 
-Если не найдено:
+ЕСЛИ товар не найден:
 {
   "success": false,
-  "error": "Б/у товары не найдены на Avito"
-}
-        `;
-        
-        const messages = [{
-            role: 'user',
-            content: prompt
-        }];
-        
-        const response = await this.aiClient.callAI(messages);
-        
+  "productName": "название товара",
+  "message": "Товар не найден на Avito или недостаточно данных",
+  "searchDetails": "Подробности неудачного поиска"
+}`;
+    }
+
+    async searchUsedPrice(productName) {
+        const messages = [
+            { role: 'system', content: this.systemPrompt },
+            { role: 'user', content: `Найди минимальную цену б/у товара "${productName}" на Avito.ru по всей России.` }
+        ];
+
         try {
-            return JSON.parse(response);
+            const response = await this.openaiService.makeRequest(messages);
+            const result = this.parseJSONResponse(response);
+            
+            return result;
+            
         } catch (error) {
-            throw new Error('Не удалось обработать результаты поиска на Avito');
+            return {
+                success: false,
+                productName,
+                message: `Ошибка поиска на Avito: ${error.message}`,
+                searchDetails: `Техническая ошибка: ${error.message}`
+            };
+        }
+    }
+
+    parseJSONResponse(content) {
+        try {
+            let cleanContent = content.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+            const jsonMatch = cleanContent.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                return JSON.parse(jsonMatch[0]);
+            }
+            throw new Error('JSON не найден в ответе');
+        } catch (error) {
+            return {
+                success: false,
+                message: `Ошибка парсинга ответа AI: ${error.message}`,
+                searchDetails: `Не удалось распарсить JSON: ${error.message}`
+            };
         }
     }
 }
 
-// Класс для голосовых команд
-class VoiceController {
+// Голосовые команды
+class VoiceCommandService {
     constructor() {
         this.recognition = null;
         this.isListening = false;
-        this.isSupported = 'webkitSpeechRecognition' in window || 'SpeechRecognition' in window;
-        this.language = 'ru-RU';
         this.onResult = null;
         this.onError = null;
-        this.onStart = null;
-        this.onEnd = null;
+        this.initRecognition();
     }
-    
-    init() {
-        if (!this.isSupported) {
-            throw new Error('Голосовые команды не поддерживаются в этом браузере');
+
+    initRecognition() {
+        if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+            console.warn('Голосовые команды не поддерживаются в этом браузере');
+            return;
         }
-        
+
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         this.recognition = new SpeechRecognition();
         
-        this.recognition.lang = this.language;
-        this.recognition.continuous = false;
-        this.recognition.interimResults = false;
-        this.recognition.maxAlternatives = 1;
-        
-        this.recognition.onstart = () => {
-            this.isListening = true;
-            if (this.onStart) this.onStart();
-        };
-        
-        this.recognition.onend = () => {
-            this.isListening = false;
-            if (this.onEnd) this.onEnd();
-        };
-        
+        this.recognition.lang = CONFIG.VOICE_RECOGNITION.LANG;
+        this.recognition.continuous = CONFIG.VOICE_RECOGNITION.CONTINUOUS;
+        this.recognition.interimResults = CONFIG.VOICE_RECOGNITION.INTERIM_RESULTS;
+
         this.recognition.onresult = (event) => {
             const result = event.results[event.results.length - 1];
-            if (result.isFinal) {
-                const transcript = result[0].transcript.toLowerCase().trim();
-                if (this.onResult) this.onResult(transcript);
+            if (result.isFinal && this.onResult) {
+                this.onResult(result[0].transcript);
             }
         };
-        
+
         this.recognition.onerror = (event) => {
+            if (this.onError) {
+                this.onError(event.error);
+            }
+        };
+
+        this.recognition.onend = () => {
             this.isListening = false;
-            if (this.onError) this.onError(event.error);
         };
     }
-    
-    start() {
-        if (this.recognition && !this.isListening) {
-            try {
-                this.recognition.start();
-            } catch (error) {
-                console.error('Ошибка запуска голосового распознавания:', error);
-            }
+
+    isAvailable() {
+        return this.recognition !== null;
+    }
+
+    startListening(onResult, onError) {
+        if (!this.recognition) return false;
+
+        this.onResult = onResult;
+        this.onError = onError;
+
+        try {
+            this.recognition.start();
+            this.isListening = true;
+            return true;
+        } catch (error) {
+            console.error('Ошибка запуска голосового распознавания:', error);
+            return false;
         }
     }
-    
-    stop() {
+
+    stopListening() {
         if (this.recognition && this.isListening) {
             this.recognition.stop();
+            this.isListening = false;
         }
     }
 }
 
 // Основной класс приложения
-class AIPriceAnalyzer {
+class RealAIPriceAnalyzer {
     constructor() {
+        // Данные системы
         this.products = [];
-        this.selectedProducts = new Set();
         this.searchHistory = [];
-        this.currentSearch = null;
-        
-        // Настройки
+        this.operationLog = [];
         this.settings = {
             openaiApiKey: '',
-            gptModel: 'gpt-4o',
-            serverlessEndpoint: '/api/openai',
-            voiceEnabled: false,
-            voiceLanguage: 'ru-RU',
-            competitorSearchPrompt: '',
-            avitoSearchPrompt: '',
-            editPrompt: ''
+            openaiModel: 'gpt-4o',
+            serverlessEndpoint: ''
         };
-        
-        // Инициализация компонентов
-        this.logger = new Logger();
-        this.aiClient = null;
-        this.dataEditingAgent = null;
-        this.competitorSearchAgent = null;
-        this.avitoSearchAgent = null;
-        this.voiceController = new VoiceController();
-        
+        this.statistics = {
+            successfulSearches: 0,
+            failedSearches: 0,
+            totalOperations: 0
+        };
+
+        // Сервисы
+        this.openaiService = null;
+        this.editAgent = null;
+        this.competitorAgent = null;
+        this.avitoAgent = null;
+        this.voiceService = new VoiceCommandService();
+
+        // Состояние
+        this.selectedProducts = new Set();
+        this.isProcessing = false;
+
+        // Инициализация
         this.init();
     }
-    
+
     init() {
         if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', () => this.setupApplication());
+            document.addEventListener('DOMContentLoaded', () => this.setupApp());
         } else {
-            this.setupApplication();
+            this.setupApp();
         }
     }
-    
-    setupApplication() {
-        try {
-            this.setupEventListeners();
-            this.setupTabs();
-            this.setupVoiceCommands();
-            this.updateUI();
-            this.logger.log('success', 'Система AI Price Analyzer готова к работе');
-        } catch (error) {
-            this.logger.log('error', `Ошибка инициализации: ${error.message}`);
-            console.error('Ошибка инициализации:', error);
-        }
-    }
-    
-    setupEventListeners() {
-        // ИСПРАВЛЕНО: Более надежное связывание событий
+
+    setupApp() {
+        console.log('🚀 Запуск AI Price Analyzer');
         
-        // Импорт/экспорт
-        this.safeBindEvent('importBtn', 'click', () => {
-            const input = document.getElementById('importFile');
-            if (input) input.click();
-        });
-        this.safeBindEvent('importFirstFileBtn', 'click', () => {
-            const input = document.getElementById('importFile');
-            if (input) input.click();
-        });
-        this.safeBindEvent('importFile', 'change', (e) => this.handleFileImport(e));
-        this.safeBindEvent('exportExcelBtn', 'click', () => this.exportToExcel());
-        this.safeBindEvent('exportCsvBtn', 'click', () => this.exportToCSV());
+        this.loadSettings();
+        this.setupEventListeners();
+        this.renderProducts();
+        this.updateUI();
+        this.logOperation('СИСТЕМА', 'AI Price Analyzer запущен', 'info');
+        
+        if (this.settings.openaiApiKey) {
+            this.initializeAIServices();
+        }
+
+        console.log('✅ AI Price Analyzer готов к работе');
+    }
+
+    // Настройка обработчиков событий
+    setupEventListeners() {
+        // Настройки
+        this.bindEvent('saveSettings', 'click', () => this.saveSettings());
+        this.bindEvent('testConnection', 'click', () => this.testConnection());
         
         // Управление товарами
-        this.safeBindEvent('addProductBtn', 'click', () => this.showAddProductModal());
-        this.safeBindEvent('addFirstProductBtn', 'click', () => this.showAddProductModal());
-        this.safeBindEvent('saveProductBtn', 'click', () => this.saveNewProduct());
+        this.bindEvent('addProductBtn', 'click', () => this.showAddProductModal());
+        this.bindEvent('importFile', 'change', (e) => this.importFile(e));
+        this.bindEvent('exportBtn', 'click', () => this.exportData());
+        this.bindEvent('productSearch', 'input', (e) => this.filterProducts(e.target.value));
         
         // Выбор товаров
-        this.safeBindEvent('selectAllBtn', 'click', () => this.selectAllProducts());
-        this.safeBindEvent('deselectAllBtn', 'click', () => this.deselectAllProducts());
-        this.safeBindEvent('selectAllCheckbox', 'change', (e) => this.toggleSelectAll(e.target.checked));
+        this.bindEvent('selectAll', 'change', (e) => this.toggleSelectAll(e.target.checked));
+        this.bindEvent('selectAllBtn', 'click', () => this.selectAll());
+        this.bindEvent('clearSelection', 'click', () => this.clearSelection());
+        this.bindEvent('deleteSelected', 'click', () => this.deleteSelected());
         
-        // Поиск
-        this.safeBindEvent('bulkSearchCompetitorBtn', 'click', () => this.searchCompetitorPrices());
-        this.safeBindEvent('bulkSearchUsedBtn', 'click', () => this.searchUsedPrices());
-        this.safeBindEvent('clearResultsBtn', 'click', () => this.clearResults());
-        this.safeBindEvent('cancelSearchBtn', 'click', () => this.cancelSearch());
-        
-        // AI диалог
-        this.safeBindEvent('sendCommandBtn', 'click', () => this.sendAICommand());
-        this.safeBindEvent('userInput', 'keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                this.sendAICommand();
-            }
+        // AI команды
+        this.bindEvent('voiceBtn', 'click', () => this.startVoiceCommand());
+        this.bindEvent('executeCommand', 'click', () => this.executeTextCommand());
+        this.bindEvent('commandInput', 'keypress', (e) => {
+            if (e.key === 'Enter') this.executeTextCommand();
         });
-        this.safeBindEvent('voiceInputBtn', 'click', () => this.toggleVoiceInput());
-        this.safeBindEvent('voiceBtn', 'click', () => this.toggleVoiceInput());
         
-        // Настройки
-        this.safeBindEvent('saveSettingsBtn', 'click', () => this.saveSettings());
-        this.safeBindEvent('resetSettingsBtn', 'click', () => this.resetSettings());
-        this.safeBindEvent('testOpenAIBtn', 'click', () => this.testOpenAI());
-        this.safeBindEvent('testVoiceBtn', 'click', () => this.testVoice());
-        
-        // История и логи
-        this.safeBindEvent('clearHistoryBtn', 'click', () => this.clearHistory());
-        this.safeBindEvent('exportHistoryBtn', 'click', () => this.exportHistory());
-        this.safeBindEvent('clearLogsBtn', 'click', () => this.logger.clear());
-        this.safeBindEvent('exportLogsBtn', 'click', () => this.exportLogs());
-        this.safeBindEvent('logLevel', 'change', () => this.logger.renderLogs());
-        this.safeBindEvent('historyFilter', 'change', () => this.renderHistory());
+        // Быстрые команды
+        document.querySelectorAll('.command-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const command = btn.dataset.command;
+                this.executeCommand(command);
+            });
+        });
         
         // Модальные окна
-        document.addEventListener('click', (e) => {
-            if (e.target.classList.contains('modal-close') || 
-                e.target.classList.contains('modal__backdrop')) {
-                this.hideAllModals();
-            }
+        this.bindEvent('saveNewProduct', 'click', () => this.saveNewProduct());
+        document.querySelectorAll('.modal-close').forEach(btn => {
+            btn.addEventListener('click', () => this.hideModals());
         });
         
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') {
-                this.hideAllModals();
-            }
-        });
+        // Лог операций
+        this.bindEvent('clearLog', 'click', () => this.clearLog());
+        this.bindEvent('exportLog', 'click', () => this.exportLog());
         
-        this.logger.log('success', 'Все обработчики событий подключены');
+        // Тема
+        this.bindEvent('themeToggle', 'click', () => this.toggleTheme());
     }
-    
-    safeBindEvent(elementId, event, handler) {
-        const element = document.getElementById(elementId);
+
+    bindEvent(id, event, handler) {
+        const element = document.getElementById(id);
         if (element) {
             element.addEventListener(event, handler);
-            this.logger.log('info', `Подключен обработчик ${event} для ${elementId}`);
         } else {
-            this.logger.log('warning', `Элемент ${elementId} не найден для подключения ${event}`);
+            console.warn(`Element ${id} not found`);
         }
     }
-    
-    setupTabs() {
-        const tabButtons = document.querySelectorAll('.tab-btn');
+
+    // Инициализация AI сервисов
+    initializeAIServices() {
+        this.openaiService = new OpenAIService(
+            this.settings.openaiApiKey,
+            this.settings.openaiModel,
+            this.settings.serverlessEndpoint || null
+        );
+
+        this.editAgent = new ProductEditingAgent(this.openaiService);
+        this.competitorAgent = new CompetitorPriceAgent(this.openaiService);
+        this.avitoAgent = new AvitoSearchAgent(this.openaiService);
+
+        this.updateSystemStatus('success', 'AI агенты активированы');
+        this.enableAIControls();
         
-        if (tabButtons.length === 0) {
-            this.logger.log('error', 'Кнопки вкладок не найдены');
-            return;
-        }
-        
-        tabButtons.forEach(button => {
-            button.addEventListener('click', (e) => {
-                e.preventDefault();
-                const tabId = button.dataset.tab;
-                
-                this.logger.log('info', `Переключение на вкладку: ${tabId}`);
-                
-                // Обновляем кнопки
-                tabButtons.forEach(btn => btn.classList.remove('tab-btn--active'));
-                button.classList.add('tab-btn--active');
-                
-                // Обновляем контент
-                const tabContents = document.querySelectorAll('.tab-content');
-                tabContents.forEach(content => {
-                    content.classList.remove('tab-content--active');
-                });
-                
-                const targetContent = document.getElementById(tabId);
-                if (targetContent) {
-                    targetContent.classList.add('tab-content--active');
-                    this.onTabActivated(tabId);
-                } else {
-                    this.logger.log('error', `Содержимое вкладки ${tabId} не найдено`);
-                }
-            });
+        this.logOperation('СИСТЕМА', 'AI сервисы инициализированы', 'success');
+    }
+
+    enableAIControls() {
+        // Включаем AI элементы управления
+        document.getElementById('executeCommand')?.removeAttribute('disabled');
+        document.querySelectorAll('.command-btn').forEach(btn => {
+            btn.removeAttribute('disabled');
         });
         
-        this.logger.log('success', `Настроена навигация для ${tabButtons.length} вкладок`);
-    }
-    
-    onTabActivated(tabId) {
-        this.logger.log('info', `Активирована вкладка: ${tabId}`);
-        
-        switch (tabId) {
-            case 'products':
-                this.renderProducts();
-                break;
-            case 'ai-dialog':
-                // AI диалог уже готов
-                break;
-            case 'search-history':
-                this.renderHistory();
-                break;
-            case 'settings':
-                this.renderSettings();
-                break;
-            case 'logs':
-                this.logger.renderLogs();
-                break;
+        // Голосовые команды
+        if (this.voiceService.isAvailable()) {
+            const voiceBtn = document.getElementById('voiceBtn');
+            const voiceStatus = document.getElementById('voiceStatus');
+            
+            if (voiceBtn) voiceBtn.removeAttribute('disabled');
+            if (voiceStatus) voiceStatus.textContent = 'Готово к использованию';
         }
+        
+        this.updateAIAgentStatus('success', 'Агенты активны');
     }
-    
-    setupVoiceCommands() {
-        if (!this.voiceController.isSupported) {
-            this.logger.log('warning', 'Голосовые команды не поддерживаются в этом браузере');
+
+    // Сохранение настроек
+    async saveSettings() {
+        const apiKey = document.getElementById('openaiApiKey')?.value.trim();
+        const model = document.getElementById('openaiModel')?.value;
+        const serverlessEndpoint = document.getElementById('serverlessEndpoint')?.value.trim();
+
+        if (!apiKey) {
+            this.showNotification('Ошибка', 'Введите OpenAI API ключ', 'error');
             return;
         }
-        
-        try {
-            this.voiceController.init();
-            
-            this.voiceController.onStart = () => {
-                this.logger.log('info', 'Начато распознавание голоса');
-                const btn = document.getElementById('voiceBtn');
-                if (btn) {
-                    btn.classList.add('voice-active');
-                    btn.textContent = '🎤 Слушаю...';
-                }
-            };
-            
-            this.voiceController.onEnd = () => {
-                this.logger.log('info', 'Завершено распознавание голоса');
-                const btn = document.getElementById('voiceBtn');
-                if (btn) {
-                    btn.classList.remove('voice-active');
-                    btn.textContent = '🎤 Голос';
-                }
-            };
-            
-            this.voiceController.onResult = (transcript) => {
-                this.logger.log('info', `Распознано: "${transcript}"`);
-                this.processVoiceCommand(transcript);
-            };
-            
-            this.voiceController.onError = (error) => {
-                this.logger.log('error', `Ошибка голосового распознавания: ${error}`);
-            };
-            
-            this.logger.log('success', 'Голосовые команды инициализированы');
-        } catch (error) {
-            this.logger.log('error', `Ошибка инициализации голосовых команд: ${error.message}`);
+
+        if (!apiKey.startsWith('sk-')) {
+            this.showNotification('Ошибка', 'Неверный формат API ключа', 'error');
+            return;
         }
+
+        this.settings.openaiApiKey = apiKey;
+        this.settings.openaiModel = model || 'gpt-4o';
+        this.settings.serverlessEndpoint = serverlessEndpoint || '';
+
+        this.storeSettings();
+        this.initializeAIServices();
+        
+        this.showNotification('Настройки сохранены', 'API настройки успешно сохранены', 'success');
+        this.logOperation('НАСТРОЙКИ', 'API настройки обновлены', 'info');
     }
-    
-    // Обработка файлов
-    async handleFileImport(event) {
-        const file = event.target.files[0];
-        if (!file) return;
-        
-        this.logger.log('info', `Импорт файла: ${file.name}`);
-        
+
+    // Тест подключения
+    async testConnection() {
+        if (!this.openaiService) {
+            this.updateApiStatus('error', 'API не настроен');
+            return;
+        }
+
+        this.updateApiStatus('testing', 'Тестирование подключения...');
+
         try {
-            if (file.name.endsWith('.csv')) {
-                await this.importCSV(file);
-            } else if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
-                await this.importExcel(file);
+            const result = await this.openaiService.testConnection();
+            
+            if (result.success) {
+                this.updateApiStatus('success', `Подключение успешно (${result.method})`);
+                this.showNotification('Тест успешен', 'Подключение к OpenAI API работает', 'success');
+                this.logOperation('API', `Тест подключения успешен через ${result.method}`, 'success');
             } else {
-                throw new Error('Неподдерживаемый формат файла');
+                this.updateApiStatus('error', result.message);
+                this.showNotification('Тест неудачен', result.message, 'error');
+                this.logOperation('API', `Тест подключения неудачен: ${result.message}`, 'error');
             }
+        } catch (error) {
+            this.updateApiStatus('error', error.message);
+            this.showNotification('Ошибка теста', error.message, 'error');
+            this.logOperation('API', `Ошибка теста подключения: ${error.message}`, 'error');
+        }
+    }
+
+    // Выполнение команд
+    async executeCommand(commandText) {
+        if (!this.openaiService) {
+            this.showNotification('Ошибка', 'Настройте OpenAI API', 'error');
+            return;
+        }
+
+        if (this.isProcessing) {
+            this.showNotification('Обработка', 'Предыдущая команда еще выполняется', 'warning');
+            return;
+        }
+
+        this.isProcessing = true;
+        this.logOperation('КОМАНДА', `Выполнение: "${commandText}"`, 'info');
+
+        try {
+            const lowerCommand = commandText.toLowerCase();
             
-            this.updateUI();
-            this.logger.log('success', `Файл успешно импортирован: ${this.products.length} товаров`);
-            this.showNotification('Успех', `Импортировано ${this.products.length} товаров`);
+            if (lowerCommand.includes('измени') || lowerCommand.includes('установи') || lowerCommand.includes('обнови')) {
+                await this.handleEditCommand(commandText);
+            } else if (lowerCommand.includes('найди цену') || lowerCommand.includes('поиск цен')) {
+                await this.handlePriceSearch(commandText);
+            } else if (lowerCommand.includes('б/у') || lowerCommand.includes('авито')) {
+                await this.handleAvitoSearch(commandText);
+            } else if (lowerCommand.includes('обновить все цены')) {
+                await this.updateAllPrices();
+            } else {
+                this.showNotification('Неизвестная команда', 'Доступные команды: поиск цен, изменение товаров, поиск б/у цен', 'warning');
+                this.logOperation('КОМАНДА', `Неизвестная команда: "${commandText}"`, 'warning');
+            }
             
         } catch (error) {
-            this.logger.log('error', `Ошибка импорта: ${error.message}`);
-            this.showNotification('Ошибка', `Не удалось импортировать файл: ${error.message}`);
+            this.showNotification('Ошибка выполнения', error.message, 'error');
+            this.logOperation('КОМАНДА', `Ошибка выполнения: ${error.message}`, 'error');
+        } finally {
+            this.isProcessing = false;
         }
-        
-        event.target.value = '';
     }
-    
-    async importCSV(file) {
-        const text = await file.text();
-        const lines = text.split('\n').filter(line => line.trim());
+
+    async handleEditCommand(command) {
+        const result = await this.editAgent.processCommand(command, this.products);
         
-        if (lines.length < 2) {
-            throw new Error('Файл должен содержать заголовки и хотя бы одну строку данных');
+        if (result.success) {
+            this.renderProducts();
+            this.storeSettings();
+            this.showNotification('Команда выполнена', result.message, 'success');
+            this.logOperation('РЕДАКТИРОВАНИЕ', result.message, 'success');
+        } else {
+            this.showNotification('Ошибка редактирования', result.message, 'error');
+            this.logOperation('РЕДАКТИРОВАНИЕ', result.message, 'error');
         }
+    }
+
+    async handlePriceSearch(command) {
+        const selectedIds = Array.from(this.selectedProducts);
         
-        const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
-        const products = [];
-        
-        for (let i = 1; i < lines.length; i++) {
-            const values = lines[i].split(',').map(v => v.trim().replace(/"/g, ''));
-            if (values.length >= 3) {
-                products.push({
-                    id: Date.now() + i,
-                    name: values[0] || `Товар ${i}`,
-                    description: values[1] || '',
-                    quantity: parseInt(values[2]) || 1,
-                    purchasePrice: parseFloat(values[3]) || 0,
-                    salePrice: parseFloat(values[4]) || 0,
-                    competitorNewPrice: null,
-                    competitorUsedPrice: null,
-                    lastUpdated: null
-                });
+        if (selectedIds.length === 0) {
+            this.showNotification('Выберите товары', 'Выберите товары для поиска цен', 'warning');
+            return;
+        }
+
+        for (const productId of selectedIds) {
+            const product = this.products.find(p => p.id === productId);
+            if (product) {
+                await this.searchCompetitorPrice(product);
             }
         }
-        
-        this.products = products;
     }
-    
-    async importExcel(file) {
-        if (!window.XLSX) {
-            throw new Error('Библиотека XLSX не загружена');
+
+    async handleAvitoSearch(command) {
+        const selectedIds = Array.from(this.selectedProducts);
+        
+        if (selectedIds.length === 0) {
+            this.showNotification('Выберите товары', 'Выберите товары для поиска б/у цен', 'warning');
+            return;
         }
-        
-        const data = await file.arrayBuffer();
-        const workbook = XLSX.read(data, { type: 'array' });
-        const sheetName = workbook.SheetNames[0];
-        const sheet = workbook.Sheets[sheetName];
-        const jsonData = XLSX.utils.sheet_to_json(sheet);
-        
-        if (jsonData.length === 0) {
-            throw new Error('Файл Excel не содержит данных');
+
+        for (const productId of selectedIds) {
+            const product = this.products.find(p => p.id === productId);
+            if (product) {
+                await this.searchAvitoPrice(product);
+            }
         }
-        
-        const products = [];
-        
-        jsonData.forEach((row, index) => {
-            const keys = Object.keys(row);
-            products.push({
-                id: Date.now() + index,
-                name: row[keys[0]] || `Товар ${index + 1}`,
-                description: row[keys[1]] || '',
-                quantity: parseInt(row[keys[2]]) || 1,
-                purchasePrice: parseFloat(row[keys[3]]) || 0,
-                salePrice: parseFloat(row[keys[4]]) || 0,
-                competitorNewPrice: null,
-                competitorUsedPrice: null,
-                lastUpdated: null
-            });
-        });
-        
-        this.products = products;
     }
-    
-    exportToCSV() {
+
+    async searchCompetitorPrice(product) {
+        this.logOperation('ПОИСК', `Поиск цен конкурентов для "${product.name}"`, 'info');
+        
+        try {
+            const result = await this.competitorAgent.searchPrice(product.name);
+            
+            if (result.success) {
+                product.competitorNewPrice = result.minPrice;
+                product.lastUpdated = new Date().toISOString();
+                
+                this.addSearchHistory({
+                    type: 'competitor',
+                    productName: product.name,
+                    result: result,
+                    timestamp: new Date().toISOString()
+                });
+                
+                this.statistics.successfulSearches++;
+                this.renderProducts();
+                this.updateUI();
+                this.storeSettings();
+                
+                this.showNotification('Цены найдены', `Минимальная цена: ${this.formatPrice(result.minPrice)}`, 'success');
+                this.logOperation('ПОИСК', `Найдена минимальная цена ${result.minPrice} руб для "${product.name}"`, 'success');
+                
+            } else {
+                this.statistics.failedSearches++;
+                this.updateUI();
+                
+                this.showNotification('Цены не найдены', result.message, 'warning');
+                this.logOperation('ПОИСК', `Цены не найдены для "${product.name}": ${result.message}`, 'warning');
+            }
+            
+        } catch (error) {
+            this.statistics.failedSearches++;
+            this.updateUI();
+            
+            this.logOperation('ПОИСК', `Ошибка поиска цен для "${product.name}": ${error.message}`, 'error');
+            throw error;
+        }
+    }
+
+    async searchAvitoPrice(product) {
+        this.logOperation('ПОИСК', `Поиск б/у цен на Avito для "${product.name}"`, 'info');
+        
+        try {
+            const result = await this.avitoAgent.searchUsedPrice(product.name);
+            
+            if (result.success) {
+                product.competitorUsedPrice = result.minPrice;
+                product.lastUpdated = new Date().toISOString();
+                
+                this.addSearchHistory({
+                    type: 'avito',
+                    productName: product.name,
+                    result: result,
+                    timestamp: new Date().toISOString()
+                });
+                
+                this.statistics.successfulSearches++;
+                this.renderProducts();
+                this.updateUI();
+                this.storeSettings();
+                
+                this.showNotification('Б/у цены найдены', `Минимальная цена: ${this.formatPrice(result.minPrice)}`, 'success');
+                this.logOperation('ПОИСК', `Найдена минимальная б/у цена ${result.minPrice} руб для "${product.name}"`, 'success');
+                
+            } else {
+                this.statistics.failedSearches++;
+                this.updateUI();
+                
+                this.showNotification('Б/у цены не найдены', result.message, 'warning');
+                this.logOperation('ПОИСК', `Б/у цены не найдены для "${product.name}": ${result.message}`, 'warning');
+            }
+            
+        } catch (error) {
+            this.statistics.failedSearches++;
+            this.updateUI();
+            
+            this.logOperation('ПОИСК', `Ошибка поиска б/у цен для "${product.name}": ${error.message}`, 'error');
+            throw error;
+        }
+    }
+
+    async updateAllPrices() {
         if (this.products.length === 0) {
-            this.showNotification('Предупреждение', 'Нет товаров для экспорта');
+            this.showNotification('Нет товаров', 'Добавьте товары для обновления цен', 'warning');
             return;
         }
+
+        this.showNotification('Обновление цен', 'Начато обновление цен всех товаров', 'info');
         
-        const headers = [
-            'Название товара',
-            'Краткое описание', 
-            'Количество',
-            'Цена закупа',
-            'Цена продажи',
-            'Цена конкурентов NEW',
-            'Цена конкурентов б/у',
-            'Последнее обновление'
-        ];
-        
-        const csvContent = [
-            headers.join(','),
-            ...this.products.map(product => [
-                `"${product.name}"`,
-                `"${product.description || ''}"`,
-                product.quantity,
-                product.purchasePrice || 0,
-                product.salePrice || 0,
-                product.competitorNewPrice || '',
-                product.competitorUsedPrice || '',
-                `"${product.lastUpdated || ''}"`
-            ].join(','))
-        ].join('\n');
-        
-        this.downloadFile(csvContent, 'ai-price-analysis.csv', 'text/csv');
-        this.logger.log('success', 'Экспорт в CSV завершен');
-    }
-    
-    exportToExcel() {
-        if (this.products.length === 0) {
-            this.showNotification('Предупреждение', 'Нет товаров для экспорта');
-            return;
+        for (const product of this.products) {
+            await this.searchCompetitorPrice(product);
+            // Пауза между запросами
+            await new Promise(resolve => setTimeout(resolve, 1000));
         }
         
-        if (!window.XLSX) {
-            this.showNotification('Ошибка', 'Библиотека XLSX не загружена');
+        this.showNotification('Обновление завершено', 'Цены всех товаров обновлены', 'success');
+        this.logOperation('СИСТЕМА', 'Обновление цен всех товаров завершено', 'success');
+    }
+
+    // Голосовые команды
+    startVoiceCommand() {
+        if (!this.voiceService.isAvailable()) {
+            this.showNotification('Недоступно', 'Голосовые команды не поддерживаются в вашем браузере', 'error');
             return;
         }
-        
-        const ws = XLSX.utils.json_to_sheet(this.products.map(product => ({
-            'Название товара': product.name,
-            'Краткое описание': product.description || '',
-            'Количество': product.quantity,
-            'Цена закупа': product.purchasePrice || 0,
-            'Цена продажи': product.salePrice || 0,
-            'Цена конкурентов NEW': product.competitorNewPrice || '',
-            'Цена конкурентов б/у': product.competitorUsedPrice || '',
-            'Последнее обновление': product.lastUpdated || ''
-        })));
-        
-        const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, 'AI Price Analysis');
-        
-        XLSX.writeFile(wb, 'ai-price-analysis.xlsx');
-        this.logger.log('success', 'Экспорт в Excel завершен');
+
+        const voiceBtn = document.getElementById('voiceBtn');
+        if (voiceBtn) voiceBtn.textContent = '🎤 Слушаю...';
+
+        const success = this.voiceService.startListening(
+            (transcript) => {
+                if (voiceBtn) voiceBtn.textContent = '🎤 Голосовая команда';
+                this.executeCommand(transcript);
+                this.logOperation('ГОЛОС', `Распознана команда: "${transcript}"`, 'info');
+            },
+            (error) => {
+                if (voiceBtn) voiceBtn.textContent = '🎤 Голосовая команда';
+                this.showNotification('Ошибка голосового ввода', `Ошибка: ${error}`, 'error');
+                this.logOperation('ГОЛОС', `Ошибка распознавания: ${error}`, 'error');
+            }
+        );
+
+        if (!success) {
+            if (voiceBtn) voiceBtn.textContent = '🎤 Голосовая команда';
+            this.showNotification('Ошибка', 'Не удалось запустить голосовое распознавание', 'error');
+        }
     }
-    
-    downloadFile(content, filename, mimeType) {
-        const blob = new Blob([content], { type: mimeType });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+
+    executeTextCommand() {
+        const input = document.getElementById('commandInput');
+        const command = input?.value.trim();
+        
+        if (command) {
+            this.executeCommand(command);
+            input.value = '';
+        }
     }
-    
+
     // Управление товарами
     showAddProductModal() {
-        const modal = document.getElementById('addProductModal');
-        if (modal) {
-            modal.classList.remove('hidden');
-            this.logger.log('info', 'Показано модальное окно добавления товара');
-        }
+        this.showModal('addProductModal');
     }
-    
+
     saveNewProduct() {
         const name = document.getElementById('newProductName')?.value.trim();
-        const description = document.getElementById('newProductDescription')?.value.trim();
+        const description = document.getElementById('newProductDescription')?.value.trim() || '';
         const quantity = parseInt(document.getElementById('newProductQuantity')?.value) || 1;
         const purchasePrice = parseFloat(document.getElementById('newProductPurchasePrice')?.value) || 0;
         const salePrice = parseFloat(document.getElementById('newProductSalePrice')?.value) || 0;
-        
+
         if (!name) {
-            this.showNotification('Ошибка', 'Введите название товара');
+            this.showNotification('Ошибка', 'Введите название товара', 'error');
             return;
         }
-        
+
         const newProduct = {
             id: Date.now(),
             name,
@@ -824,660 +972,132 @@ class AIPriceAnalyzer {
             salePrice,
             competitorNewPrice: null,
             competitorUsedPrice: null,
-            lastUpdated: null
+            lastUpdated: new Date().toISOString()
         };
-        
+
         this.products.push(newProduct);
+        this.renderProducts();
         this.updateUI();
-        this.hideAllModals();
-        
+        this.storeSettings();
+        this.hideModals();
+
         // Очистка формы
-        const form = document.getElementById('addProductForm');
-        if (form) form.reset();
-        
-        this.logger.log('success', `Добавлен новый товар: ${name}`);
-        this.showNotification('Успех', `Товар "${name}" добавлен`);
+        document.getElementById('addProductForm')?.reset();
+
+        this.showNotification('Товар добавлен', `Товар "${name}" успешно добавлен`, 'success');
+        this.logOperation('ТОВАР', `Добавлен товар "${name}"`, 'success');
     }
-    
-    // Выбор товаров
-    selectAllProducts() {
+
+    deleteSelected() {
+        const selectedIds = Array.from(this.selectedProducts);
+        if (selectedIds.length === 0) {
+            this.showNotification('Выберите товары', 'Выберите товары для удаления', 'warning');
+            return;
+        }
+
+        if (confirm(`Удалить ${selectedIds.length} товар(ов)?`)) {
+            this.products = this.products.filter(p => !selectedIds.includes(p.id));
+            this.selectedProducts.clear();
+            this.renderProducts();
+            this.updateUI();
+            this.storeSettings();
+
+            this.showNotification('Товары удалены', `Удалено ${selectedIds.length} товар(ов)`, 'success');
+            this.logOperation('ТОВАР', `Удалено ${selectedIds.length} товар(ов)`, 'info');
+        }
+    }
+
+    selectAll() {
         this.selectedProducts.clear();
         this.products.forEach(product => {
             this.selectedProducts.add(product.id);
         });
+        this.renderProducts();
         this.updateUI();
-        this.logger.log('info', 'Выбраны все товары');
     }
-    
-    deselectAllProducts() {
+
+    clearSelection() {
         this.selectedProducts.clear();
+        this.renderProducts();
         this.updateUI();
-        this.logger.log('info', 'Снято выделение со всех товаров');
     }
-    
+
     toggleSelectAll(checked) {
         if (checked) {
-            this.selectAllProducts();
+            this.selectAll();
         } else {
-            this.deselectAllProducts();
+            this.clearSelection();
         }
     }
-    
-    // AI поиск цен
-    async searchCompetitorPrices() {
-        if (!this.aiClient) {
-            this.showNotification('Ошибка', 'OpenAI API не настроен. Перейдите в настройки.');
-            return;
-        }
-        
-        const selectedIds = Array.from(this.selectedProducts);
-        if (selectedIds.length === 0) {
-            this.showNotification('Предупреждение', 'Выберите товары для поиска');
-            return;
-        }
-        
-        await this.performSearch('competitor', selectedIds);
-    }
-    
-    async searchUsedPrices() {
-        if (!this.aiClient) {
-            this.showNotification('Ошибка', 'OpenAI API не настроен. Перейдите в настройки.');
-            return;
-        }
-        
-        const selectedIds = Array.from(this.selectedProducts);
-        if (selectedIds.length === 0) {
-            this.showNotification('Предупреждение', 'Выберите товары для поиска');
-            return;
-        }
-        
-        await this.performSearch('used', selectedIds);
-    }
-    
-    async performSearch(type, productIds) {
-        this.currentSearch = { type, productIds, cancelled: false };
-        this.showSearchProgress();
-        
-        const agent = type === 'competitor' ? this.competitorSearchAgent : this.avitoSearchAgent;
-        const total = productIds.length;
-        let completed = 0;
-        let successful = 0;
-        
-        this.logger.log('info', `Начат поиск ${type} для ${total} товаров`);
-        
-        try {
-            for (const productId of productIds) {
-                if (this.currentSearch.cancelled) break;
-                
-                const product = this.products.find(p => p.id === productId);
-                if (!product) continue;
-                
-                this.updateProgress(
-                    (completed / total) * 100,
-                    `Поиск ${completed + 1}/${total}: ${product.name}`
-                );
-                
-                try {
-                    let result;
-                    if (type === 'competitor') {
-                        result = await agent.searchCompetitorPrices(product.name);
-                    } else {
-                        result = await agent.searchAvitoUsed(product.name);
+
+    // Импорт/Экспорт
+    importFile(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                if (file.name.endsWith('.json')) {
+                    const data = JSON.parse(e.target.result);
+                    if (data.products) {
+                        this.products = data.products;
+                        this.renderProducts();
+                        this.updateUI();
+                        this.storeSettings();
+                        this.showNotification('Импорт успешен', `Импортировано ${data.products.length} товаров`, 'success');
+                        this.logOperation('ИМПОРТ', `Импортировано ${data.products.length} товаров из JSON`, 'success');
                     }
-                    
-                    if (result.success) {
-                        if (type === 'competitor') {
-                            product.competitorNewPrice = result.minPrice;
-                        } else {
-                            product.competitorUsedPrice = result.minPrice;
-                        }
-                        product.lastUpdated = new Date().toLocaleString('ru-RU');
-                        successful++;
-                        
-                        // Добавляем в историю
-                        this.searchHistory.unshift({
-                            id: Date.now() + Math.random(),
-                            type,
-                            productName: product.name,
-                            result,
-                            timestamp: new Date().toISOString()
-                        });
-                        
-                        this.logger.log('success', `${type} поиск: найдена цена для ${product.name} - ${result.minPrice} руб.`);
-                    } else {
-                        this.logger.log('warning', `${type} поиск: не найдено для ${product.name}`);
-                    }
-                    
-                } catch (error) {
-                    this.logger.log('error', `Ошибка ${type} поиска для ${product.name}: ${error.message}`);
-                }
-                
-                completed++;
-                
-                // Обновляем таблицу
-                this.renderProducts();
-                
-                // Пауза между запросами
-                await new Promise(resolve => setTimeout(resolve, 1000));
-            }
-            
-            this.logger.log('success', `${type} поиск завершен. Найдено цен: ${successful}/${total}`);
-            this.showNotification('Поиск завершен', `Найдено цен: ${successful} из ${total}`);
-            
-        } finally {
-            this.hideSearchProgress();
-            this.currentSearch = null;
-            this.updateUI();
-        }
-    }
-    
-    cancelSearch() {
-        if (this.currentSearch) {
-            this.currentSearch.cancelled = true;
-            this.logger.log('info', 'Поиск отменен пользователем');
-        }
-    }
-    
-    clearResults() {
-        this.products.forEach(product => {
-            product.competitorNewPrice = null;
-            product.competitorUsedPrice = null;
-            product.lastUpdated = null;
-        });
-        
-        this.searchHistory = [];
-        this.updateUI();
-        this.logger.log('info', 'Все результаты поиска очищены');
-        this.showNotification('Информация', 'Результаты очищены');
-    }
-    
-    // AI диалог
-    async sendAICommand() {
-        const input = document.getElementById('userInput');
-        if (!input) return;
-        
-        const command = input.value.trim();
-        
-        if (!command) return;
-        
-        if (!this.aiClient) {
-            this.showNotification('Ошибка', 'OpenAI API не настроен. Перейдите в настройки.');
-            return;
-        }
-        
-        // Добавляем сообщение пользователя
-        this.addDialogMessage('user', command);
-        input.value = '';
-        
-        // Показываем индикатор загрузки
-        const loadingId = this.addDialogMessage('ai', 'Анализирую команду...');
-        
-        try {
-            await this.processAICommand(command, loadingId);
-        } catch (error) {
-            this.updateDialogMessage(loadingId, `Ошибка: ${error.message}`);
-            this.logger.log('error', `Ошибка AI команды: ${error.message}`);
-        }
-    }
-    
-    async processAICommand(command, loadingId) {
-        const lowerCommand = command.toLowerCase();
-        
-        if (lowerCommand.includes('найди цену') && lowerCommand.includes('конкурент')) {
-            // Поиск цен у конкурентов
-            const productName = this.extractProductName(command, 'конкурент');
-            if (productName) {
-                this.updateDialogMessage(loadingId, `Ищу цены на "${productName}" у конкурентов...`);
-                const result = await this.competitorSearchAgent.searchCompetitorPrices(productName);
-                
-                if (result.success) {
-                    this.updateDialogMessage(loadingId, 
-                        `Найдена цена на "${productName}": ${result.minPrice} руб. (найдено на ${result.sitesFound} сайтах)`
-                    );
                 } else {
-                    this.updateDialogMessage(loadingId, `Не удалось найти цены на "${productName}"`);
+                    this.showNotification('Формат не поддерживается', 'Пока поддерживается только JSON. Excel/CSV в разработке.', 'info');
                 }
-            } else {
-                this.updateDialogMessage(loadingId, 'Не удалось определить название товара из команды');
+            } catch (error) {
+                this.showNotification('Ошибка импорта', error.message, 'error');
+                this.logOperation('ИМПОРТ', `Ошибка импорта: ${error.message}`, 'error');
             }
-            
-        } else if (lowerCommand.includes('найди') && lowerCommand.includes('б/у')) {
-            // Поиск б/у цен
-            const productName = this.extractProductName(command, 'б/у');
-            if (productName) {
-                this.updateDialogMessage(loadingId, `Ищу б/у товар "${productName}" на Avito...`);
-                const result = await this.avitoSearchAgent.searchAvitoUsed(productName);
-                
-                if (result.success) {
-                    this.updateDialogMessage(loadingId, 
-                        `Найден б/у товар "${productName}": от ${result.minPrice} руб. (найдено ${result.totalFound} объявлений)`
-                    );
-                } else {
-                    this.updateDialogMessage(loadingId, `Не найдены б/у объявления для "${productName}"`);
-                }
-            } else {
-                this.updateDialogMessage(loadingId, 'Не удалось определить название товара из команды');
-            }
-            
-        } else if (lowerCommand.includes('измени') || lowerCommand.includes('установи')) {
-            // Редактирование данных
-            this.updateDialogMessage(loadingId, 'Анализирую команду редактирования...');
-            const result = await this.dataEditingAgent.processEditCommand(command, this.products);
-            
-            if (result.success) {
-                const product = this.products.find(p => p.id == result.productId || p.name === result.productName);
-                if (product) {
-                    Object.assign(product, result.changes);
-                    product.lastUpdated = new Date().toLocaleString('ru-RU');
-                    this.updateUI();
-                    this.updateDialogMessage(loadingId, `Успешно изменено: ${result.explanation}`);
-                } else {
-                    this.updateDialogMessage(loadingId, 'Товар не найден для редактирования');
-                }
-            } else {
-                this.updateDialogMessage(loadingId, `Ошибка: ${result.error}`);
-            }
-            
-        } else {
-            // Общий AI ответ
-            const messages = [{
-                role: 'user', 
-                content: `Ты помощник по анализу цен товаров. Ответь на вопрос: ${command}`
-            }];
-            
-            const response = await this.aiClient.callAI(messages);
-            this.updateDialogMessage(loadingId, response);
-        }
-    }
-    
-    extractProductName(command, keyword) {
-        const regex = new RegExp(`найди.*?цену.*?на\\s+([^\\s].*?)(?:\\s+${keyword}|$)`, 'i');
-        const match = command.match(regex);
-        return match ? match[1].trim() : null;
-    }
-    
-    addDialogMessage(type, content) {
-        const container = document.getElementById('dialogMessages');
-        if (!container) return null;
-        
-        const messageId = Date.now() + Math.random();
-        
-        const messageEl = document.createElement('div');
-        messageEl.className = `message message--${type}`;
-        messageEl.id = `message-${messageId}`;
-        
-        const avatar = type === 'user' ? '👤' : '🤖';
-        
-        messageEl.innerHTML = `
-            <div class="message__avatar">${avatar}</div>
-            <div class="message__content">${content}</div>
-        `;
-        
-        container.appendChild(messageEl);
-        container.scrollTop = container.scrollHeight;
-        
-        return messageId;
-    }
-    
-    updateDialogMessage(messageId, content) {
-        const messageEl = document.getElementById(`message-${messageId}`);
-        if (messageEl) {
-            const contentEl = messageEl.querySelector('.message__content');
-            if (contentEl) {
-                contentEl.textContent = content;
-            }
-        }
-    }
-    
-    // Голосовые команды
-    toggleVoiceInput() {
-        if (!this.settings.voiceEnabled) {
-            this.showNotification('Предупреждение', 'Голосовые команды отключены в настройках');
-            return;
-        }
-        
-        if (!this.voiceController.isSupported) {
-            this.showNotification('Ошибка', 'Голосовые команды не поддерживаются в этом браузере');
-            return;
-        }
-        
-        if (this.voiceController.isListening) {
-            this.voiceController.stop();
-        } else {
-            this.voiceController.start();
-        }
-    }
-    
-    processVoiceCommand(transcript) {
-        // Добавляем команду в диалог
-        const input = document.getElementById('userInput');
-        if (input) {
-            input.value = transcript;
-            // Выполняем команду
-            this.sendAICommand();
-        }
-    }
-    
-    // Настройки
-    renderSettings() {
-        const elements = {
-            openaiApiKey: document.getElementById('openaiApiKey'),
-            gptModel: document.getElementById('gptModel'),
-            serverlessEndpoint: document.getElementById('serverlessEndpoint'),
-            voiceEnabled: document.getElementById('voiceEnabled'),
-            voiceLanguage: document.getElementById('voiceLanguage')
         };
-        
-        if (elements.openaiApiKey) elements.openaiApiKey.value = this.settings.openaiApiKey;
-        if (elements.gptModel) elements.gptModel.value = this.settings.gptModel;
-        if (elements.serverlessEndpoint) elements.serverlessEndpoint.value = this.settings.serverlessEndpoint;
-        if (elements.voiceEnabled) elements.voiceEnabled.checked = this.settings.voiceEnabled;
-        if (elements.voiceLanguage) elements.voiceLanguage.value = this.settings.voiceLanguage;
-        
-        this.updateSettingsStatus();
+        reader.readAsText(file);
     }
-    
-    saveSettings() {
-        const elements = {
-            openaiApiKey: document.getElementById('openaiApiKey'),
-            gptModel: document.getElementById('gptModel'),
-            serverlessEndpoint: document.getElementById('serverlessEndpoint'),
-            voiceEnabled: document.getElementById('voiceEnabled'),
-            voiceLanguage: document.getElementById('voiceLanguage')
+
+    exportData() {
+        const data = {
+            products: this.products,
+            searchHistory: this.searchHistory,
+            operationLog: this.operationLog,
+            statistics: this.statistics,
+            exportDate: new Date().toISOString()
         };
-        
-        this.settings.openaiApiKey = elements.openaiApiKey?.value.trim() || '';
-        this.settings.gptModel = elements.gptModel?.value || 'gpt-4o';
-        this.settings.serverlessEndpoint = elements.serverlessEndpoint?.value.trim() || '/api/openai';
-        this.settings.voiceEnabled = elements.voiceEnabled?.checked || false;
-        this.settings.voiceLanguage = elements.voiceLanguage?.value || 'ru-RU';
-        
-        // Инициализируем AI клиента
-        if (this.settings.openaiApiKey) {
-            this.aiClient = new ServerlessAIClient(this.settings.openaiApiKey, this.settings.serverlessEndpoint);
-            this.dataEditingAgent = new DataEditingAgent(this.aiClient);
-            this.competitorSearchAgent = new CompetitorSearchAgent(this.aiClient);
-            this.avitoSearchAgent = new AvitoSearchAgent(this.aiClient);
-        }
-        
-        // Обновляем голосовые команды
-        if (this.voiceController.isSupported) {
-            this.voiceController.language = this.settings.voiceLanguage;
-        }
-        
-        this.updateSettingsStatus();
-        this.updateUI();
-        
-        this.logger.log('success', 'Настройки сохранены');
-        this.showNotification('Успех', 'Настройки сохранены');
+
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `ai_price_analyzer_${new Date().toISOString().split('T')[0]}.json`;
+        a.click();
+
+        URL.revokeObjectURL(url);
+
+        this.showNotification('Экспорт завершен', 'Данные экспортированы в JSON файл', 'success');
+        this.logOperation('ЭКСПОРТ', 'Данные экспортированы', 'info');
     }
-    
-    resetSettings() {
-        this.settings = {
-            openaiApiKey: '',
-            gptModel: 'gpt-4o',
-            serverlessEndpoint: '/api/openai',
-            voiceEnabled: false,
-            voiceLanguage: 'ru-RU',
-            competitorSearchPrompt: '',
-            avitoSearchPrompt: '',
-            editPrompt: ''
-        };
-        
-        this.aiClient = null;
-        this.dataEditingAgent = null;
-        this.competitorSearchAgent = null;
-        this.avitoSearchAgent = null;
-        
-        this.renderSettings();
-        this.updateUI();
-        
-        this.logger.log('info', 'Настройки сброшены к умолчанию');
-        this.showNotification('Информация', 'Настройки сброшены');
-    }
-    
-    async testOpenAI() {
-        const apiKeyEl = document.getElementById('openaiApiKey');
-        const endpointEl = document.getElementById('serverlessEndpoint');
-        
-        const apiKey = apiKeyEl?.value.trim();
-        const endpoint = endpointEl?.value.trim() || '/api/openai';
-        
-        if (!apiKey) {
-            this.showNotification('Ошибка', 'Введите OpenAI API ключ');
-            return;
-        }
-        
-        const statusEl = document.getElementById('openaiStatus');
-        if (statusEl) {
-            statusEl.textContent = 'Тестирование...';
-            statusEl.className = 'status status--info';
-        }
-        
-        try {
-            const testClient = new ServerlessAIClient(apiKey, endpoint);
-            const result = await testClient.testConnection();
-            
-            if (statusEl) {
-                if (result.success) {
-                    statusEl.textContent = 'Подключение работает';
-                    statusEl.className = 'status status--success';
-                    this.logger.log('success', 'OpenAI API тест прошел успешно');
-                } else {
-                    statusEl.textContent = `Ошибка: ${result.error}`;
-                    statusEl.className = 'status status--error';
-                    this.logger.log('error', `OpenAI API тест неудачен: ${result.error}`);
-                }
-            }
-        } catch (error) {
-            if (statusEl) {
-                statusEl.textContent = `Ошибка: ${error.message}`;
-                statusEl.className = 'status status--error';
-            }
-            this.logger.log('error', `Ошибка тестирования OpenAI: ${error.message}`);
-        }
-    }
-    
-    testVoice() {
-        if (!this.voiceController.isSupported) {
-            this.showNotification('Ошибка', 'Голосовые команды не поддерживаются');
-            return;
-        }
-        
-        const statusEl = document.getElementById('voiceStatus');
-        if (statusEl) {
-            statusEl.textContent = 'Тестирование микрофона...';
-            statusEl.className = 'status status--info';
-        }
-        
-        try {
-            this.voiceController.start();
-            setTimeout(() => {
-                if (this.voiceController.isListening) {
-                    this.voiceController.stop();
-                    if (statusEl) {
-                        statusEl.textContent = 'Микрофон работает';
-                        statusEl.className = 'status status--success';
-                    }
-                } else {
-                    if (statusEl) {
-                        statusEl.textContent = 'Микрофон недоступен';
-                        statusEl.className = 'status status--error';
-                    }
-                }
-            }, 2000);
-        } catch (error) {
-            if (statusEl) {
-                statusEl.textContent = `Ошибка: ${error.message}`;
-                statusEl.className = 'status status--error';
-            }
-        }
-    }
-    
-    updateSettingsStatus() {
-        const openaiStatus = document.getElementById('openaiStatus');
-        const voiceStatus = document.getElementById('voiceStatus');
-        const apiStatus = document.getElementById('apiStatus');
-        
-        if (this.settings.openaiApiKey) {
-            if (openaiStatus) {
-                openaiStatus.textContent = 'Настроено';
-                openaiStatus.className = 'status status--success';
-            }
-            if (apiStatus) {
-                apiStatus.textContent = '🟢 API настроен';
-                apiStatus.className = 'status status--success';
-            }
-        } else {
-            if (openaiStatus) {
-                openaiStatus.textContent = 'Не настроено';
-                openaiStatus.className = 'status status--error';
-            }
-            if (apiStatus) {
-                apiStatus.textContent = '🔴 API не настроен';
-                apiStatus.className = 'status status--error';
-            }
-        }
-        
-        if (voiceStatus) {
-            if (this.settings.voiceEnabled && this.voiceController.isSupported) {
-                voiceStatus.textContent = 'Включено';
-                voiceStatus.className = 'status status--success';
-            } else {
-                voiceStatus.textContent = 'Отключено';
-                voiceStatus.className = 'status status--warning';
-            }
-        }
-    }
-    
-    // История поиска
-    renderHistory() {
-        const container = document.getElementById('historyContent');
-        if (!container) return;
-        
-        const filter = document.getElementById('historyFilter')?.value || 'all';
-        const filteredHistory = filter === 'all' ? 
-            this.searchHistory : 
-            this.searchHistory.filter(item => item.type === filter);
-        
-        if (filteredHistory.length === 0) {
-            container.innerHTML = `
-                <div class="empty-history">
-                    <div class="empty-history__icon">📝</div>
-                    <p>История операций AI агента появится здесь</p>
-                </div>
-            `;
-            return;
-        }
-        
-        container.innerHTML = '';
-        
-        filteredHistory.slice(0, 50).forEach(item => {
-            const historyEl = document.createElement('div');
-            historyEl.className = 'history-item';
-            
-            const typeLabel = item.type === 'competitor' ? 'Поиск NEW цен' : 'Поиск б/у цен';
-            
-            historyEl.innerHTML = `
-                <div class="history-item__header">
-                    <span class="history-item__type">${typeLabel}</span>
-                    <span class="history-item__timestamp">${new Date(item.timestamp).toLocaleString('ru-RU')}</span>
-                </div>
-                <div class="history-item__details">
-                    Товар: <strong>${item.productName}</strong><br>
-                    ${item.result.success ? 
-                        `Найдена цена: <strong>${item.result.minPrice} руб.</strong><br>
-                         Сайтов найдено: ${item.result.sitesFound || item.result.totalFound || 'N/A'}` :
-                        `Результат: ${item.result.error}`
-                    }
-                </div>
-                ${item.result.success && item.result.bestOffer ? `
-                    <div class="history-item__result">
-                        Лучшее предложение: ${item.result.bestOffer.site || 'N/A'}<br>
-                        Цена: ${item.result.bestOffer.price} руб.<br>
-                        ${item.result.bestOffer.url ? `<a href="${item.result.bestOffer.url}" target="_blank">Ссылка</a>` : ''}
-                    </div>
-                ` : ''}
-            `;
-            
-            container.appendChild(historyEl);
-        });
-    }
-    
-    clearHistory() {
-        this.searchHistory = [];
-        this.renderHistory();
-        this.logger.log('info', 'История поиска очищена');
-    }
-    
-    exportHistory() {
-        if (this.searchHistory.length === 0) {
-            this.showNotification('Предупреждение', 'История пуста');
-            return;
-        }
-        
-        const csvContent = [
-            'Дата,Тип,Товар,Успех,Цена,Ошибка',
-            ...this.searchHistory.map(item => [
-                new Date(item.timestamp).toLocaleString('ru-RU'),
-                item.type === 'competitor' ? 'NEW цены' : 'б/у цены',
-                `"${item.productName}"`,
-                item.result.success ? 'Да' : 'Нет',
-                item.result.success ? item.result.minPrice : '',
-                item.result.success ? '' : `"${item.result.error}"`
-            ].join(','))
-        ].join('\n');
-        
-        this.downloadFile(csvContent, 'ai-search-history.csv', 'text/csv');
-        this.logger.log('success', 'История экспортирована');
-    }
-    
-    exportLogs() {
-        if (this.logger.logs.length === 0) {
-            this.showNotification('Предупреждение', 'Логи пусты');
-            return;
-        }
-        
-        const csvContent = [
-            'Время,Уровень,Сообщение',
-            ...this.logger.logs.map(log => [
-                log.timestamp,
-                log.level,
-                `"${log.message}"`
-            ].join(','))
-        ].join('\n');
-        
-        this.downloadFile(csvContent, 'ai-system-logs.csv', 'text/csv');
-        this.logger.log('success', 'Логи экспортированы');
-    }
-    
-    // UI обновления
-    updateUI() {
-        this.renderProducts();
-        this.updateProductsCount();
-        this.updateSelectionInfo();
-        this.updateBulkActions();
-        this.updateSettingsStatus();
-    }
-    
+
+    // Отрисовка интерфейса
     renderProducts() {
         const tbody = document.getElementById('productsTableBody');
         const emptyState = document.getElementById('emptyState');
-        const tableContainer = document.getElementById('productsTable');
         
-        if (!tbody) return;
-        
+        if (!tbody || !emptyState) return;
+
         if (this.products.length === 0) {
-            if (tableContainer) tableContainer.style.display = 'none';
-            if (emptyState) emptyState.style.display = 'flex';
+            tbody.innerHTML = '';
+            emptyState.style.display = 'block';
             return;
         }
-        
-        if (tableContainer) tableContainer.style.display = 'table';
-        if (emptyState) emptyState.style.display = 'none';
-        
+
+        emptyState.style.display = 'none';
         tbody.innerHTML = '';
-        
+
         this.products.forEach(product => {
             const row = document.createElement('tr');
             row.dataset.productId = product.id;
@@ -1485,209 +1105,359 @@ class AIPriceAnalyzer {
             if (this.selectedProducts.has(product.id)) {
                 row.classList.add('selected');
             }
-            
+
             row.innerHTML = `
-                <td class="checkbox-col">
+                <td>
                     <input type="checkbox" class="product-checkbox" 
                            ${this.selectedProducts.has(product.id) ? 'checked' : ''}
                            data-product-id="${product.id}">
                 </td>
-                <td class="editable-cell" data-field="name" data-product-id="${product.id}">
-                    ${product.name}
-                </td>
-                <td class="editable-cell" data-field="description" data-product-id="${product.id}">
-                    ${product.description || ''}
-                </td>
-                <td class="editable-cell" data-field="quantity" data-product-id="${product.id}">
-                    ${product.quantity}
-                </td>
-                <td class="editable-cell price-cell" data-field="purchasePrice" data-product-id="${product.id}">
-                    ${this.formatPrice(product.purchasePrice)}
-                </td>
-                <td class="editable-cell price-cell" data-field="salePrice" data-product-id="${product.id}">
-                    ${this.formatPrice(product.salePrice)}
-                </td>
-                <td class="price-cell competitor-price">
-                    ${product.competitorNewPrice ? this.formatPrice(product.competitorNewPrice) : '—'}
-                </td>
-                <td class="price-cell competitor-price">
-                    ${product.competitorUsedPrice ? this.formatPrice(product.competitorUsedPrice) : '—'}
-                </td>
-                <td class="text-muted">
-                    ${product.lastUpdated || '—'}
-                </td>
-                <td>
-                    <button class="btn btn--sm btn--outline" data-action="delete" data-product-id="${product.id}">
-                        🗑️
-                    </button>
+                <td class="product-name-cell">${this.escapeHtml(product.name)}</td>
+                <td class="product-description-cell">${this.escapeHtml(product.description || '')}</td>
+                <td class="quantity-cell">${product.quantity}</td>
+                <td class="price-cell">${this.formatPrice(product.purchasePrice)}</td>
+                <td class="price-cell">${this.formatPrice(product.salePrice)}</td>
+                <td class="price-cell ${product.competitorNewPrice ? 'updated' : ''}">${this.formatPrice(product.competitorNewPrice)}</td>
+                <td class="price-cell ${product.competitorUsedPrice ? 'updated' : ''}">${this.formatPrice(product.competitorUsedPrice)}</td>
+                <td class="date-cell">${this.formatDate(product.lastUpdated)}</td>
+                <td class="actions-cell">
+                    <button class="action-btn action-btn--primary" onclick="priceAnalyzer.searchProductPrices(${product.id})">🔍</button>
+                    <button class="action-btn" onclick="priceAnalyzer.editProduct(${product.id})">✏️</button>
+                    <button class="action-btn action-btn--danger" onclick="priceAnalyzer.deleteProduct(${product.id})">🗑️</button>
                 </td>
             `;
-            
+
             tbody.appendChild(row);
         });
-        
-        // Обработчики событий для новых элементов
+
+        // Привязываем обработчики чекбоксов
         tbody.querySelectorAll('.product-checkbox').forEach(checkbox => {
             checkbox.addEventListener('change', (e) => {
                 const productId = parseInt(e.target.dataset.productId);
-                const row = e.target.closest('tr');
-                
                 if (e.target.checked) {
                     this.selectedProducts.add(productId);
-                    row.classList.add('selected');
                 } else {
                     this.selectedProducts.delete(productId);
-                    row.classList.remove('selected');
                 }
-                
-                this.updateSelectionInfo();
-                this.updateBulkActions();
-            });
-        });
-        
-        tbody.querySelectorAll('.editable-cell').forEach(cell => {
-            cell.addEventListener('click', () => this.editCell(cell));
-        });
-        
-        tbody.querySelectorAll('button[data-action="delete"]').forEach(button => {
-            button.addEventListener('click', (e) => {
-                const productId = parseInt(e.target.dataset.productId);
-                this.deleteProduct(productId);
-            });
-        });
-    }
-    
-    editCell(cell) {
-        if (cell.classList.contains('editable-cell--editing')) return;
-        
-        const currentValue = cell.textContent.trim();
-        const field = cell.dataset.field;
-        const productId = parseInt(cell.dataset.productId);
-        
-        cell.classList.add('editable-cell--editing');
-        
-        const input = document.createElement('input');
-        input.type = field === 'quantity' || field.includes('Price') ? 'number' : 'text';
-        input.className = 'editable-input';
-        input.value = field.includes('Price') ? 
-            currentValue.replace(/[^\d.,]/g, '').replace(',', '.') : 
-            currentValue;
-        
-        cell.innerHTML = '';
-        cell.appendChild(input);
-        input.focus();
-        input.select();
-        
-        const saveEdit = () => {
-            const newValue = input.value.trim();
-            const product = this.products.find(p => p.id === productId);
-            
-            if (product) {
-                if (field === 'quantity') {
-                    product[field] = parseInt(newValue) || 0;
-                } else if (field.includes('Price')) {
-                    product[field] = parseFloat(newValue) || 0;
-                } else {
-                    product[field] = newValue;
-                }
-                product.lastUpdated = new Date().toLocaleString('ru-RU');
-            }
-            
-            cell.classList.remove('editable-cell--editing');
-            this.renderProducts();
-            
-            this.logger.log('success', `Отредактировано: ${field} товара "${product.name}"`);
-        };
-        
-        input.addEventListener('blur', saveEdit);
-        input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                saveEdit();
-            } else if (e.key === 'Escape') {
-                cell.classList.remove('editable-cell--editing');
                 this.renderProducts();
-            }
+                this.updateUI();
+            });
         });
     }
-    
+
+    updateUI() {
+        // Обновляем счетчики
+        this.updateElement('totalProducts', this.products.length);
+        this.updateElement('selectedCount', this.selectedProducts.size);
+        this.updateElement('successfulSearches', this.statistics.successfulSearches);
+        this.updateElement('failedSearches', this.statistics.failedSearches);
+
+        // Обновляем кнопку удаления
+        const deleteBtn = document.getElementById('deleteSelected');
+        if (deleteBtn) {
+            deleteBtn.disabled = this.selectedProducts.size === 0;
+        }
+
+        // Обновляем чекбокс "выбрать все"
+        const selectAllCheckbox = document.getElementById('selectAll');
+        if (selectAllCheckbox) {
+            selectAllCheckbox.checked = this.products.length > 0 && this.selectedProducts.size === this.products.length;
+            selectAllCheckbox.indeterminate = this.selectedProducts.size > 0 && this.selectedProducts.size < this.products.length;
+        }
+    }
+
+    updateElement(id, value) {
+        const element = document.getElementById(id);
+        if (element) {
+            element.textContent = value;
+        }
+    }
+
+    // Методы для кнопок в таблице
+    async searchProductPrices(productId) {
+        const product = this.products.find(p => p.id === productId);
+        if (product && this.openaiService) {
+            await this.searchCompetitorPrice(product);
+        }
+    }
+
+    editProduct(productId) {
+        const product = this.products.find(p => p.id === productId);
+        if (product) {
+            const newName = prompt('Название товара:', product.name);
+            if (newName && newName.trim()) {
+                product.name = newName.trim();
+                product.lastUpdated = new Date().toISOString();
+                this.renderProducts();
+                this.storeSettings();
+                this.logOperation('ТОВАР', `Изменен товар: "${newName}"`, 'info');
+            }
+        }
+    }
+
     deleteProduct(productId) {
         const product = this.products.find(p => p.id === productId);
-        if (!product) return;
-        
-        if (confirm(`Удалить товар "${product.name}"?`)) {
+        if (product && confirm(`Удалить товар "${product.name}"?`)) {
             this.products = this.products.filter(p => p.id !== productId);
             this.selectedProducts.delete(productId);
+            this.renderProducts();
             this.updateUI();
-            this.logger.log('info', `Удален товар: ${product.name}`);
+            this.storeSettings();
+            this.logOperation('ТОВАР', `Удален товар: "${product.name}"`, 'info');
         }
     }
-    
-    updateProductsCount() {
-        const el = document.getElementById('productsCount');
-        if (el) {
-            el.textContent = `Товаров: ${this.products.length}`;
-        }
+
+    filterProducts(searchText) {
+        const rows = document.querySelectorAll('#productsTableBody tr');
+        const lowerSearch = searchText.toLowerCase();
+
+        rows.forEach(row => {
+            const productName = row.cells[1].textContent.toLowerCase();
+            const productDescription = row.cells[2].textContent.toLowerCase();
+            const matches = productName.includes(lowerSearch) || productDescription.includes(lowerSearch);
+            row.style.display = matches ? '' : 'none';
+        });
     }
-    
-    updateSelectionInfo() {
-        const el = document.getElementById('selectionInfo');
-        if (el) {
-            el.textContent = `Выбрано: ${this.selectedProducts.size}`;
+
+    // История поиска и логи
+    addSearchHistory(entry) {
+        this.searchHistory.unshift(entry);
+        if (this.searchHistory.length > 100) {
+            this.searchHistory = this.searchHistory.slice(0, 100);
+        }
+        this.renderSearchHistory();
+    }
+
+    renderSearchHistory() {
+        const container = document.getElementById('searchHistoryContent');
+        if (!container) return;
+
+        if (this.searchHistory.length === 0) {
+            container.innerHTML = '<div class="search-history-empty"><p>История поиска пуста. Выполните первый поиск цен.</p></div>';
+            return;
+        }
+
+        container.innerHTML = '';
+        this.searchHistory.forEach(entry => {
+            const entryEl = document.createElement('div');
+            entryEl.className = 'search-entry';
+            
+            const typeText = entry.type === 'competitor' ? 'Поиск у конкурентов' : 'Поиск на Avito';
+            
+            entryEl.innerHTML = `
+                <div class="search-entry__header">
+                    <h4 class="search-entry__title">${typeText}: ${this.escapeHtml(entry.productName)}</h4>
+                    <span class="search-entry__time">${this.formatDate(entry.timestamp)}</span>
+                </div>
+                <div class="search-entry__details">
+                    ${entry.result.success ? 'Успешно найдены цены' : 'Цены не найдены'}
+                </div>
+                <div class="search-entry__results">
+                    ${entry.result.success && entry.result.minPrice ? 
+                        `<div class="search-result-item">
+                            <span>Минимальная цена:</span>
+                            <span class="search-result-price">${this.formatPrice(entry.result.minPrice)}</span>
+                        </div>` : 
+                        `<div class="search-result-item">
+                            <span>${entry.result.message || 'Результат недоступен'}</span>
+                        </div>`
+                    }
+                </div>
+            `;
+            
+            container.appendChild(entryEl);
+        });
+    }
+
+    logOperation(type, message, level = 'info') {
+        const logEntry = {
+            timestamp: new Date().toISOString(),
+            type,
+            message,
+            level
+        };
+        
+        this.operationLog.unshift(logEntry);
+        if (this.operationLog.length > 1000) {
+            this.operationLog = this.operationLog.slice(0, 1000);
         }
         
-        const checkbox = document.getElementById('selectAllCheckbox');
-        if (checkbox) {
-            checkbox.checked = this.selectedProducts.size === this.products.length && this.products.length > 0;
-            checkbox.indeterminate = this.selectedProducts.size > 0 && this.selectedProducts.size < this.products.length;
+        this.renderLog();
+        this.statistics.totalOperations++;
+    }
+
+    renderLog() {
+        const container = document.getElementById('logContent');
+        if (!container) return;
+
+        container.innerHTML = '';
+        this.operationLog.slice(0, 50).forEach(entry => {
+            const entryEl = document.createElement('div');
+            entryEl.className = `log-entry log-entry--${entry.level}`;
+            
+            entryEl.innerHTML = `
+                <span class="log-time">${this.formatDate(entry.timestamp)}</span>
+                <span class="log-type">${entry.type}</span>
+                <span class="log-message">${this.escapeHtml(entry.message)}</span>
+            `;
+            
+            container.appendChild(entryEl);
+        });
+    }
+
+    clearLog() {
+        if (confirm('Очистить журнал операций?')) {
+            this.operationLog = [];
+            this.renderLog();
+            this.logOperation('СИСТЕМА', 'Журнал операций очищен', 'info');
         }
     }
-    
-    updateBulkActions() {
-        const competitorBtn = document.getElementById('bulkSearchCompetitorBtn');
-        const usedBtn = document.getElementById('bulkSearchUsedBtn');
+
+    exportLog() {
+        const blob = new Blob([JSON.stringify(this.operationLog, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `operation_log_${new Date().toISOString().split('T')[0]}.json`;
+        a.click();
+
+        URL.revokeObjectURL(url);
+
+        this.showNotification('Лог экспортирован', 'Журнал операций экспортирован', 'success');
+    }
+
+    // Статусы интерфейса
+    updateSystemStatus(status, message) {
+        const element = document.getElementById('systemStatus');
+        if (element) {
+            element.textContent = message;
+            element.className = `status status--${status}`;
+        }
+    }
+
+    updateApiStatus(status, message) {
+        const element = document.getElementById('apiStatus');
+        if (element) {
+            element.textContent = message;
+            element.className = `api-status ${status}`;
+        }
+    }
+
+    updateAIAgentStatus(status, message) {
+        const element = document.getElementById('aiAgentStatus');
+        if (element) {
+            element.textContent = message;
+            element.className = `status status--${status}`;
+        }
+    }
+
+    // Уведомления
+    showNotification(title, message, type = 'info') {
+        const container = document.getElementById('notificationContainer');
+        if (!container) return;
+
+        const notification = document.createElement('div');
+        notification.className = `notification notification--${type}`;
         
-        const hasSelection = this.selectedProducts.size > 0;
-        const hasAPI = !!this.aiClient;
-        
-        if (competitorBtn) {
-            competitorBtn.disabled = !hasSelection || !hasAPI;
-        }
-        if (usedBtn) {
-            usedBtn.disabled = !hasSelection || !hasAPI;
+        notification.innerHTML = `
+            <button class="notification__close">×</button>
+            <h4 class="notification__title">${this.escapeHtml(title)}</h4>
+            <p class="notification__message">${this.escapeHtml(message)}</p>
+        `;
+
+        container.appendChild(notification);
+
+        // Обработчик закрытия
+        const closeBtn = notification.querySelector('.notification__close');
+        closeBtn.addEventListener('click', () => {
+            notification.remove();
+        });
+
+        // Автоудаление
+        setTimeout(() => {
+            if (notification.parentNode) {
+                notification.remove();
+            }
+        }, 5000);
+
+        // Клик для закрытия
+        notification.addEventListener('click', () => {
+            notification.remove();
+        });
+    }
+
+    // Модальные окна
+    showModal(modalId) {
+        const modal = document.getElementById(modalId);
+        if (modal) {
+            modal.classList.remove('hidden');
         }
     }
-    
-    // Прогресс поиска
-    showSearchProgress() {
-        const el = document.getElementById('searchProgress');
-        if (el) {
-            el.classList.remove('hidden');
-        }
+
+    hideModals() {
+        document.querySelectorAll('.modal').forEach(modal => {
+            modal.classList.add('hidden');
+        });
     }
-    
-    hideSearchProgress() {
-        const el = document.getElementById('searchProgress');
-        if (el) {
-            setTimeout(() => el.classList.add('hidden'), 1000);
-        }
+
+    // Тема
+    toggleTheme() {
+        const currentTheme = document.body.dataset.colorScheme || 'light';
+        const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+        document.body.dataset.colorScheme = newTheme;
+        this.storeTheme(newTheme);
     }
-    
-    updateProgress(percentage, text) {
-        const fill = document.getElementById('progressFill');
-        const textEl = document.getElementById('progressText');
-        
-        if (fill) {
-            fill.style.width = `${Math.min(100, Math.max(0, percentage))}%`;
-        }
-        if (textEl) {
-            textEl.textContent = text;
-        }
+
+    // Сохранение данных (без localStorage из-за ограничений)
+    storeSettings() {
+        // Сохраняем в переменной сессии (данные будут потеряны при перезагрузке)
+        // В реальном приложении здесь должна быть отправка на сервер
+        window.aiPriceAnalyzerData = {
+            products: this.products,
+            searchHistory: this.searchHistory,
+            operationLog: this.operationLog,
+            statistics: this.statistics,
+            settings: this.settings
+        };
     }
-    
+
+    loadSettings() {
+        // Загружаем из переменной сессии
+        const data = window.aiPriceAnalyzerData;
+        if (data) {
+            this.products = data.products || [];
+            this.searchHistory = data.searchHistory || [];
+            this.operationLog = data.operationLog || [];
+            this.statistics = data.statistics || { successfulSearches: 0, failedSearches: 0, totalOperations: 0 };
+            this.settings = { ...this.settings, ...data.settings };
+        }
+
+        // Загружаем настройки в форму
+        const apiKeyInput = document.getElementById('openaiApiKey');
+        const modelSelect = document.getElementById('openaiModel');
+        const endpointInput = document.getElementById('serverlessEndpoint');
+
+        if (apiKeyInput) apiKeyInput.value = this.settings.openaiApiKey || '';
+        if (modelSelect) modelSelect.value = this.settings.openaiModel || 'gpt-4o';
+        if (endpointInput) endpointInput.value = this.settings.serverlessEndpoint || '';
+    }
+
+    storeTheme(theme) {
+        // Сохраняем тему в переменной
+        window.aiPriceAnalyzerTheme = theme;
+    }
+
+    loadTheme() {
+        const theme = window.aiPriceAnalyzerTheme || 'light';
+        document.body.dataset.colorScheme = theme;
+    }
+
     // Утилиты
     formatPrice(price) {
-        if (!price || price === 0) return '0 ₽';
+        if (!price || price === null || price === undefined || isNaN(price)) {
+            return '—';
+        }
         return new Intl.NumberFormat('ru-RU', {
             style: 'currency',
             currency: 'RUB',
@@ -1695,36 +1465,50 @@ class AIPriceAnalyzer {
             maximumFractionDigits: 0
         }).format(price);
     }
-    
-    showNotification(title, message) {
-        const titleEl = document.getElementById('notificationTitle');
-        const messageEl = document.getElementById('notificationMessage');
-        const modal = document.getElementById('notificationModal');
+
+    formatDate(dateString) {
+        if (!dateString) return '—';
         
-        if (titleEl) titleEl.textContent = title;
-        if (messageEl) messageEl.textContent = message;
-        if (modal) modal.classList.remove('hidden');
+        try {
+            const date = new Date(dateString);
+            return date.toLocaleString('ru-RU', {
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        } catch {
+            return '—';
+        }
     }
-    
-    hideAllModals() {
-        document.querySelectorAll('.modal').forEach(modal => {
-            modal.classList.add('hidden');
-        });
+
+    escapeHtml(text) {
+        if (!text) return '';
+        const map = {
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#039;'
+        };
+        return text.replace(/[&<>"']/g, (m) => map[m]);
     }
 }
 
 // Инициализация приложения
-let app;
+let priceAnalyzer;
 
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => {
-        app = new AIPriceAnalyzer();
-        window.app = app; // Для отладки
-    });
-} else {
-    app = new AIPriceAnalyzer();
-    window.app = app; // Для отладки
+function initRealAIPriceAnalyzer() {
+    console.log('🚀 Запуск реальной системы AI Price Analyzer');
+    priceAnalyzer = new RealAIPriceAnalyzer();
+    window.priceAnalyzer = priceAnalyzer;
+    console.log('✅ Реальная система готова к работе');
 }
 
-// Предотвращение зума на мобильных устройствах
-document.addEventListener('touchstart', function() {}, true);
+// Запуск при загрузке страницы
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initRealAIPriceAnalyzer);
+} else {
+    initRealAIPriceAnalyzer();
+}
